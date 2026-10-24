@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MinnaNavi &amp; Bosai-Toilet (みんなナビ・防災トイレ)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: {
+  colors: { ink:'#172033', sign:'#0B5CAD', go:'#1B8A5A', warn:'#B42318', paper:'#F4F6F9' },
+  fontFamily: { sans: ['"Zen Kaku Gothic New"','"Noto Sans JP"','system-ui','sans-serif'] }
+}}};
+</script>
+<style>
+  html, body { height: 100%; }
+  body { height: 100dvh; }
+  .pin { display:block; width:30px; height:30px; border-radius:50% 50% 50% 0; transform:rotate(-45deg);
+         border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,.35); transition:transform .15s; }
+  .pin.ok { background:#1B8A5A; } .pin.closed { background:#B42318; } .pin.draft { background:#0B5CAD; }
+  .pin.sel { transform:rotate(-45deg) scale(1.35); }
+  .pin-wrap { display:flex; align-items:center; justify-content:center; }
+  .leaflet-container { font-family: inherit; }
+  .card.active { outline:3px solid #0B5CAD; outline-offset:-3px; }
+  button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-visible { outline:3px solid #F5B301; outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+</head>
+<body class="font-sans text-ink bg-paper flex flex-col">
+
+<!-- Header -->
+<header class="bg-sign text-white px-4 pb-3 flex items-center justify-between gap-3" style="padding-top:max(.75rem, env(safe-area-inset-top))">
+  <div class="min-w-0">
+    <h1 class="text-xl font-black leading-tight tracking-tight">MinnaNavi <span class="font-medium">&amp;</span> Bosai-Toilet <span class="text-base font-bold">(みんなナビ・防災トイレ)</span></h1>
+    <p class="text-sm text-blue-100 leading-snug">Accessible &amp; Disaster-Ready Restroom Finder (バリアフリー・防災対応トイレ検索)</p>
+  </div>
+  <button id="dropPin" class="shrink-0 bg-white text-sign font-bold text-sm rounded-full px-4 py-2.5 shadow hover:bg-blue-50 text-center leading-tight">+ Drop a Pin<span class="block text-xs font-medium">(ピンを立てる)</span></button>
+</header>
+
+<!-- Filter bar -->
+<nav aria-label="Filters (フィルター)" class="bg-white border-b border-slate-200">
+  <div id="filters" class="flex gap-2 overflow-x-auto px-4 py-2.5"></div>
+</nav>
+
+<!-- Map + listings -->
+<main class="flex-1 min-h-0 flex flex-col md:flex-row-reverse">
+  <section aria-label="Map (マップ)" class="h-[40%] md:h-auto md:flex-1 relative">
+    <div id="map" class="absolute inset-0"></div>
+    <p id="banner" role="status" class="hidden pointer-events-none absolute top-3 left-14 right-3 max-w-md z-[600] bg-ink text-white text-sm font-bold leading-snug rounded-xl px-4 py-2.5 shadow-lg">Click anywhere on the map to place a new restroom pin (マップ上の任意の場所をクリックして新しいトイレのピンを配置してください)</p>
+    <p class="pointer-events-none absolute left-3 bottom-6 z-[500] max-w-[75%] bg-white/95 text-xs font-bold text-ink rounded-xl px-3 py-1.5 shadow">Click the map to add a restroom (マップをクリックしてトイレを追加)</p>
+  </section>
+  <aside aria-label="Restroom listings (トイレ一覧)" class="flex-1 md:flex-none md:w-[400px] min-h-0 overflow-y-auto bg-paper border-t md:border-t-0 md:border-r border-slate-200">
+    <p id="count" class="sticky top-0 z-10 bg-paper/95 backdrop-blur px-4 py-2 text-sm font-medium text-slate-600" aria-live="polite"></p>
+    <ul id="list" class="px-3 pb-6 space-y-3"></ul>
+  </aside>
+</main>
+
+<!-- Report modal -->
+<div id="modal" class="hidden fixed inset-0 z-[2000] bg-ink/60 items-end sm:items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <form id="reportForm" class="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 max-h-[92dvh] overflow-y-auto" style="padding-bottom:max(1.25rem, env(safe-area-inset-bottom))">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <h2 id="mTitle" class="text-lg font-black leading-snug">Report restroom status (トイレの状況を報告)</h2>
+        <p class="text-sm text-slate-600">Tell others what you found. Updates show right away. (見つけた状況を共有してください。すぐに反映されます。)</p>
+      </div>
+      <button type="button" id="closeReport" class="text-2xl leading-none px-2 text-slate-500 hover:text-ink" aria-label="Close (閉じる)">&times;</button>
+    </div>
+
+    <label class="block mt-4 text-sm font-bold" for="rLoc">Location (場所)</label>
+    <select id="rLoc" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 bg-white"></select>
+
+    <fieldset class="mt-4">
+      <legend class="text-sm font-bold">Current status (現在の状況)</legend>
+      <label class="mt-1 flex items-center gap-3 border border-slate-300 rounded-lg px-3 py-2.5 has-[:checked]:border-go has-[:checked]:bg-green-50">
+        <input type="radio" name="rStatus" value="ok" checked class="accent-go w-4 h-4"> Water operational (水が使える)
+      </label>
+      <label class="mt-2 flex items-center gap-3 border border-slate-300 rounded-lg px-3 py-2.5 has-[:checked]:border-warn has-[:checked]:bg-red-50">
+        <input type="radio" name="rStatus" value="closed" class="accent-red-700 w-4 h-4"> Closed / no power (閉鎖・停電)
+      </label>
+    </fieldset>
+
+    <label class="block mt-4 text-sm font-bold" for="rNote">Note, optional (メモ・任意)</label>
+    <textarea id="rNote" rows="3" maxlength="200" placeholder="e.g. Elevator out of service (例：エレベーター故障中)" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5"></textarea>
+
+    <div class="mt-5 flex gap-3">
+      <button type="button" id="cancelReport" class="flex-1 border border-slate-300 rounded-lg py-3 px-2 font-bold leading-tight">Cancel (キャンセル)</button>
+      <button type="submit" class="flex-1 bg-sign text-white rounded-lg py-3 px-2 font-bold leading-tight hover:bg-blue-800">Send report (報告を送信)</button>
+    </div>
+  </form>
+</div>
+
+<!-- Add restroom modal (opens when the map is clicked) -->
+<div id="addModal" class="hidden fixed inset-0 z-[2000] bg-ink/60 items-end sm:items-center justify-center" role="dialog" aria-modal="true" aria-labelledby="aTitle">
+  <form id="addForm" class="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 max-h-[92dvh] overflow-y-auto" style="padding-bottom:max(1.25rem, env(safe-area-inset-bottom))">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <h2 id="aTitle" class="text-lg font-black leading-snug">Add Restroom Here (ここにトイレを追加)</h2>
+        <p class="text-sm text-slate-600">Pin location (ピンの位置): <span id="aCoords" class="font-bold"></span></p>
+      </div>
+      <button type="button" id="closeAdd" class="text-2xl leading-none px-2 text-slate-500 hover:text-ink" aria-label="Close (閉じる)">&times;</button>
+    </div>
+
+    <label class="block mt-4 text-sm font-bold" for="aName">Restroom name (トイレの名称)</label>
+    <input id="aName" name="name" type="text" required maxlength="80" placeholder="e.g. Ueno Park West Restroom (例：上野公園西トイレ)" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5">
+
+    <label class="block mt-4 text-sm font-bold" for="aGate">Gate / Access Type (改札・場所の種類)</label>
+    <select id="aGate" name="gate" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 bg-white">
+      <optgroup label="Station (駅)">
+        <option value="inside">Inside Ticket Gate (改札内)</option>
+        <option value="outside">Outside Ticket Gate (改札外)</option>
+      </optgroup>
+      <optgroup label="Elsewhere (駅以外)">
+        <option value="street">Public Park / Street (公園・路上)</option>
+        <option value="mall">Shopping Mall / Commercial (ショッピングモール・商業施設)</option>
+        <option value="shop">Local Shop / Business (店舗)</option>
+      </optgroup>
+    </select>
+
+    <fieldset class="mt-4">
+      <legend class="text-sm font-bold">Accessibility (バリアフリー設備)</legend>
+      <div id="aAccess" class="mt-1 space-y-2"></div>
+    </fieldset>
+
+    <label class="block mt-4 text-sm font-bold" for="aStatus">Status (状況)</label>
+    <select id="aStatus" name="status" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 bg-white">
+      <option value="ok">Water &amp; Power Operational (水・電気とも使用可)</option>
+      <option value="closed">Closed / No Power (閉鎖・停電)</option>
+    </select>
+
+    <div class="mt-5 flex gap-3">
+      <button type="button" id="cancelAdd" class="flex-1 border border-slate-300 rounded-lg py-3 px-2 font-bold leading-tight">Cancel (キャンセル)</button>
+      <button type="submit" class="flex-1 bg-sign text-white rounded-lg py-3 px-2 font-bold leading-tight hover:bg-blue-800">Save Restroom (トイレを保存)</button>
+    </div>
+  </form>
+</div>
+
+<div id="toast" role="status" aria-live="polite" class="hidden fixed left-1/2 -translate-x-1/2 bottom-6 z-[3000] w-[calc(100%-2rem)] max-w-sm text-center bg-ink text-white text-sm font-medium rounded-2xl px-5 py-3 shadow-lg"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// Starts empty: restrooms exist only after people add them on the map.
+const SPOTS = [];
+let nextId = 1;
+
+const EMPTY_MSG = 'No restrooms reported yet. Click anywhere on the map to add one. (報告されたトイレはまだありません。マップをクリックして追加してください。)';
+const NO_MATCH_MSG = 'No restrooms match every filter. Turn off a filter to see more. (すべての条件に合うトイレがありません。フィルターを外してください。)';
+
+const ACCESS = [
+  { key:'wheel',    en:'Wheelchair / Step-Free',    ja:'車椅子・段差なし' },
+  { key:'bed',      en:'Adult Changing Bed',        ja:'大人用ベッド' },
+  { key:'baby',     en:'Baby Changing Station',     ja:'ベビーシート' },
+  { key:'ostomate', en:'Ostomate',                  ja:'オストメイト' },
+  { key:'neutral',  en:'Gender-Neutral',            ja:'誰でもトイレ / 性別不問' },
+  { key:'braille',  en:'Braille &amp; Tactile Paving', ja:'点字・誘導ブロック' },
+  { key:'door',     en:'Automatic Sliding Door',    ja:'自動ドア' },
+  { key:'callbtn',  en:'Emergency Call Button',     ja:'非常呼び出しボタン' }
+];
+const lab = a => `${a.en} (${a.ja})`;
+
+const FILTERS = [
+  ...ACCESS.map(a => ({ key:a.key, label:lab(a), test:s => s[a.key] })),
+  { key:'inside',  label:'Inside Ticket Gate (改札内)',                            test:s => s.gate === 'inside',  group:'gate' },
+  { key:'outside', label:'Outside Gate (改札外)',                                  test:s => s.gate === 'outside', group:'gate' },
+  { key:'water',   label:'Emergency Post-Quake Water Active (震災後の給水稼働中)',  test:s => s.water === 'ok' }
+];
+
+function renderAccessBoxes() {
+  $('aAccess').innerHTML = ACCESS.map(a => `
+    <label class="flex items-center gap-3 border border-slate-300 rounded-lg px-3 py-2.5 has-[:checked]:border-sign has-[:checked]:bg-blue-50">
+      <input type="checkbox" name="${a.key}" class="accent-sign w-4 h-4"> ${lab(a)}
+    </label>`).join('');
+}
+const active = new Set();
+let selectedId = null;
+
+const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// ---- Map ----
+const map = L.map('map', { zoomControl:true }).setView([35.6812, 139.7671], 12);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19,
+  referrerPolicy: 'no-referrer',
+  attribution: 'Tiles &copy; <a href="https://www.esri.com/">Esri</a> &mdash; Source: Esri, HERE, Garmin, USGS, NGA, OpenStreetMap contributors, and the GIS User Community'
+}).addTo(map);
+const markers = new Map();
+
+function icon(s, sel) {
+  return L.divIcon({ className:'pin-wrap', iconSize:[30,30], iconAnchor:[15,30], popupAnchor:[0,-30],
+    html:`<span class="pin ${s.water === 'ok' ? 'ok' : 'closed'} ${sel ? 'sel' : ''}"></span>` });
+}
+
+// ---- Badges ----
+const STATUS_TXT = {
+  ok:     'Water Operational (水が使える)',
+  closed: 'Closed/No Power (閉鎖・停電)'
+};
+const GATE_BADGE = {
+  inside:  ['bg-blue-100 text-blue-900',       'Inside Gate (改札内)'],
+  outside: ['bg-slate-200 text-slate-800',     'Outside Gate (改札外)'],
+  street:  ['bg-emerald-100 text-emerald-900', 'Park / Street (公園・路上)'],
+  mall:    ['bg-orange-100 text-orange-900',   'Shopping Mall / Commercial (ショッピングモール・商業施設)'],
+  shop:    ['bg-yellow-100 text-yellow-900',   'Local Shop / Business (店舗)']
+};
+const chip = (cls, text) => `<span class="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${cls}">${text}</span>`;
+function badges(s) {
+  const b = [];
+  b.push(s.water === 'ok' ? chip('bg-green-100 text-green-900', '● ' + STATUS_TXT.ok) : chip('bg-red-100 text-red-900', '● ' + STATUS_TXT.closed));
+  b.push(chip(...GATE_BADGE[s.gate]));
+  ACCESS.forEach(a => { if (s[a.key]) b.push(chip('bg-sky-100 text-sky-900', lab(a))); });
+  return b.join('');
+}
+
+// ---- Render ----
+function visible() {
+  return SPOTS.filter(s => FILTERS.every(f => !active.has(f.key) || f.test(s)));
+}
+
+function render() {
+  const list = visible();
+  $('count').textContent = SPOTS.length
+    ? `${list.length} of ${SPOTS.length} restrooms shown (${SPOTS.length}件中${list.length}件を表示)`
+    : '0 restrooms (0件)';
+
+  if (!list.length) {
+    $('list').innerHTML = `<li class="text-center text-slate-600 bg-white border border-dashed border-slate-300 rounded-xl py-10 px-5 leading-relaxed">${SPOTS.length ? NO_MATCH_MSG : EMPTY_MSG}</li>`;
+  } else {
+    $('list').innerHTML = list.map(s => `
+      <li>
+        <button class="card w-full text-left bg-white rounded-xl border border-slate-200 p-4 shadow-sm hover:border-sign ${s.id === selectedId ? 'active' : ''}" data-id="${s.id}">
+          <span class="block font-bold leading-snug">${esc(s.name)}</span>
+          <span class="mt-2 flex flex-wrap gap-1.5">${badges(s)}</span>
+          ${s.note ? `<span class="mt-2 block text-sm text-slate-600">${esc(s.note)}</span>` : ''}
+          <span class="mt-1 block text-xs text-slate-500">Updated (更新): ${esc(s.updated)}</span>
+        </button>
+      </li>`).join('');
+  }
+
+  // Sync markers with the visible list
+  const ids = new Set(list.map(s => s.id));
+  SPOTS.forEach(s => {
+    let m = markers.get(s.id);
+    if (!m) {
+      m = L.marker([s.lat, s.lng], { title:s.name, keyboard:true }).on('click', () => select(s.id, true));
+      markers.set(s.id, m);
+    }
+    m.setIcon(icon(s, s.id === selectedId));
+    m.bindPopup(`<strong>${esc(s.name)}</strong><br>${STATUS_TXT[s.water]}<br><button type="button" data-report="${s.id}" style="margin-top:6px;padding:4px 10px;border-radius:999px;background:#0B5CAD;color:#fff;font-weight:700;font-size:12px">Report status (状況を報告)</button>`);
+    ids.has(s.id) ? m.addTo(map) : map.removeLayer(m);
+  });
+}
+
+function select(id, fromMap) {
+  selectedId = id;
+  const s = SPOTS.find(x => x.id === id);
+  render();
+  const m = markers.get(id);
+  if (m && map.hasLayer(m)) { map.flyTo([s.lat, s.lng], Math.max(map.getZoom(), 15), { duration:.6 }); m.openPopup(); }
+  if (fromMap) document.querySelector(`.card[data-id="${id}"]`)?.scrollIntoView({ block:'nearest', behavior:'smooth' });
+}
+
+function renderFilters() {
+  $('filters').innerHTML = FILTERS.map(f => {
+    const on = active.has(f.key);
+    return `<button data-key="${f.key}" aria-pressed="${on}" class="shrink-0 whitespace-nowrap rounded-full border px-3.5 py-2 text-sm font-bold transition-colors ${on ? 'bg-ink text-white border-ink' : 'bg-white text-ink border-slate-300 hover:border-ink'}">${on ? '✓ ' : ''}${f.label}</button>`;
+  }).join('');
+}
+
+$('filters').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-key]'); if (!btn) return;
+  const f = FILTERS.find(x => x.key === btn.dataset.key);
+  if (active.has(f.key)) active.delete(f.key);
+  else {
+    if (f.group) FILTERS.filter(x => x.group === f.group).forEach(x => active.delete(x.key)); // inside/outside are exclusive
+    active.add(f.key);
+  }
+  if (selectedId && !visible().some(s => s.id === selectedId)) selectedId = null;
+  renderFilters(); render();
+});
+
+$('list').addEventListener('click', e => {
+  const card = e.target.closest('.card'); if (card) select(Number(card.dataset.id), false);
+});
+
+// ---- Toast ----
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.remove('hidden');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add('hidden'), 3500);
+}
+
+// ---- Report modal ----
+const modal = $('modal');
+function openModal(id) {
+  if (!SPOTS.length) { toast('Add a restroom first by clicking the map. (先にマップをクリックしてトイレを追加してください。)'); return; }
+  $('rLoc').innerHTML = SPOTS.map(s => `<option value="${s.id}" ${s.id === (id ?? selectedId) ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+  modal.classList.remove('hidden'); modal.classList.add('flex');
+  $('rLoc').focus();
+}
+function closeModal() { modal.classList.add('hidden'); modal.classList.remove('flex'); $('reportForm').reset(); $('dropPin').focus(); }
+$('dropPin').addEventListener('click', showBanner);
+$('closeReport').addEventListener('click', closeModal);
+$('cancelReport').addEventListener('click', closeModal);
+modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!modal.classList.contains('hidden')) closeModal();
+  else if (!$('addModal').classList.contains('hidden')) closeAdd();
+});
+
+$('reportForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const s = SPOTS.find(x => x.id === Number($('rLoc').value));
+  s.water = document.querySelector('input[name="rStatus"]:checked').value;
+  const note = $('rNote').value.trim();
+  if (note) s.note = note;
+  s.updated = 'Just now, your report (たった今・あなたの報告)';
+  selectedId = s.id;
+  closeModal(); render();
+  toast('Report sent. The listing is updated. (報告を送信しました。一覧を更新しました。)');
+});
+
+// ---- Drop-a-pin banner ----
+function showBanner() {
+  $('banner').classList.remove('hidden');
+  clearTimeout(showBanner.t);
+  showBanner.t = setTimeout(hideBanner, 7000);
+}
+function hideBanner() { $('banner').classList.add('hidden'); }
+
+// "Report status" button inside each marker popup
+map.on('popupopen', e => {
+  e.popup.getElement()?.querySelector('[data-report]')?.addEventListener('click', ev => {
+    map.closePopup();
+    openModal(Number(ev.currentTarget.dataset.report));
+  });
+});
+
+// ---- Click-to-add pin ----
+const addModal = $('addModal');
+let draft = null;
+const draftIcon = L.divIcon({ className:'pin-wrap', iconSize:[30,30], iconAnchor:[15,30],
+  html:'<span class="pin draft sel"></span>' });
+
+map.on('click', e => {
+  hideBanner();
+  if (draft) map.removeLayer(draft);
+  draft = L.marker(e.latlng, { icon:draftIcon, keyboard:false, interactive:false }).addTo(map);
+  $('aCoords').textContent = `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`;
+  addModal.classList.remove('hidden'); addModal.classList.add('flex');
+  $('aName').focus();
+});
+
+function closeAdd() {
+  addModal.classList.add('hidden'); addModal.classList.remove('flex');
+  $('addForm').reset();
+  if (draft) { map.removeLayer(draft); draft = null; }
+}
+$('closeAdd').addEventListener('click', closeAdd);
+$('cancelAdd').addEventListener('click', closeAdd);
+addModal.addEventListener('click', e => { if (e.target === addModal) closeAdd(); });
+
+$('addForm').addEventListener('submit', e => {
+  e.preventDefault();
+  if (!draft) return;
+  const f = new FormData(e.target);
+  const name = String(f.get('name')).trim();
+  if (!name) { $('aName').focus(); return; }
+  const ll = draft.getLatLng();
+  const spot = {
+    id: nextId++, name, lat: ll.lat, lng: ll.lng, gate: f.get('gate'),
+    ...Object.fromEntries(ACCESS.map(a => [a.key, f.has(a.key)])),
+    water: f.get('status'), updated: 'Just now (たった今)', note: ''
+  };
+  SPOTS.push(spot);
+  closeAdd();
+  if (visible().some(s => s.id === spot.id)) {
+    select(spot.id, true);
+    toast('Restroom saved to the map and list. (トイレを保存しました。)');
+  } else {
+    render();
+    toast('Saved, but your current filters are hiding it. (保存しました。現在のフィルターで非表示です。)');
+  }
+});
+
+renderAccessBoxes(); renderFilters(); render();
+setTimeout(() => map.invalidateSize(), 100);
+window.addEventListener('resize', () => map.invalidateSize());
+</script>
+</body>
+</html>
